@@ -4,10 +4,9 @@ This PowerShell script is designed to count the number of pages in Word and PDF 
 
 ## Usage
 
-1. Save the script to a `.ps1` file (e.g., `DocumentPageCount.ps1`).
-2. Modify the `$folderPath` variable to point to the directory containing your documents.
-3. Place `.pdf` or `.docx` documents in the folder that the path is pointing to.
-4. Run the script.
+1. Unzip file to any directory of your choice.
+2. Move `.docx` and `.pdf` files to "Documents" folder in the unzipped directory.
+3. Double click the "StartCount" batch file to start the counter.
 
 The script will output the file name, page count, and document type for each `.docx` and `.pdf` file in the specified folder.
 
