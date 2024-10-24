@@ -2,30 +2,29 @@
 function Get-WordDocPageCount {
     param (
         [string]$filePath, # Path to the Word document
-        [ref]$wordApp        # Reference to the Word application COM object
+        [ref]$wordApp      # Reference to the Word application COM object
     )
 
     try {
         # Check if the Word application object is initialized
-        if ($null -eq $wordApp.Value) {
+        if (-not $wordApp.Value) {
             Write-Host "Error: Word application object is not initialized."
             return 0
         }
 
         # Open the Word document
         $doc = $wordApp.Value.Documents.Open($filePath)
-        if ($null -eq $doc) {
+        if (-not $doc) {
             Write-Host "Error: Unable to open Word document at path: $filePath"
             return 0
         }
 
-        # Get the page count
+        # Get the page count and close the document
         $pageCount = $doc.ComputeStatistics([Microsoft.Office.Interop.Word.WdStatistic]::wdStatisticPages)
-        $doc.Close()  # Close the document
+        $doc.Close()
         return $pageCount
     }
     catch {
-        # Handle exceptions
         Write-Host "Error processing Word document at path: $filePath"
         Write-Host "Exception: $_"
         return 0
@@ -45,14 +44,12 @@ function Get-PDFPageCount {
     }
 
     try {
-        # Read the content of the PDF file
+        # Read the content of the PDF file and count the pages
         $content = Get-Content -Path $filePath -Raw -ReadCount 0
-        # Count the number of pages based on regex matches
         $matches = [regex]::Matches($content, "/Type\s*/Page[^s]")
         return $matches.Count
     }
     catch {
-        # Handle exceptions
         Write-Host "Error processing PDF document at path: $filePath"
         Write-Host "Exception: $_"
         return 0
@@ -62,32 +59,30 @@ function Get-PDFPageCount {
 # Function to add data to a CSV file
 function Add-DataToCSV {
     param (
-        [array]$dataArray, # Array of objects containing file data
+        [array]$dataArray,  # Array of objects containing file data
         [string]$csvPath     # Path to the CSV file
     )
 
     foreach ($data in $dataArray) {
         # Format data as CSV line and append to file
-        $csvLine = "$($data.FileName),$($data.Pages),$($data.Type)"
-        $csvLine | Out-File -Append $csvPath
+        "$($data.FileName),$($data.Pages),$($data.Type)" | Out-File -Append $csvPath
     }
 }
 
 # Function to process folder and update CSV with document page counts
 function Get-FolderPageCounts {
     param (
-        [string]$folderPath, # Path to the folder containing documents
-        [bool]$writeCSV = $false, # Flag to toggle CSV writing
-        [bool]$includeDateInFileName = $false,  # Flag to include the current date in the CSV file name
-        [bool]$includeSummary = $false  # Flag to display summary information
+        [string]$folderPath = "$PSScriptRoot/Page Counter", # Default folder path
+        [bool]$writeCSV = $false,                             # Flag to toggle CSV writing
+        [bool]$includeDateInFileName = $false,               # Flag to include date in CSV file name
+        [bool]$includeSummary = $false,                       # Flag to display summary information
+        [bool]$silentMode = $true,                            # Flag to suppress prompts
+        [string]$toEmailAddress                                # Recipient email address
     )
 
-    # Prompt for folder path if not provided
-    if (-not $folderPath) {
+    # Prompt for folder path if not provided and not in silent mode
+    if (-not $folderPath -and -not $silentMode) {
         $folderPath = Read-Host "Drag a folder or leave blank for the default folder"
-        if (-not $folderPath) {
-            $folderPath = "./Default"  # Default folder path
-        }
     }
 
     $dataArray = @()  # Array to store document data
@@ -96,19 +91,20 @@ function Get-FolderPageCounts {
     $wordFiles = Get-ChildItem -Path $folderPath -Filter "*.docx" -Recurse -ErrorAction SilentlyContinue
     $pdfFiles = Get-ChildItem -Path $folderPath -Filter "*.pdf" -Recurse -ErrorAction SilentlyContinue
 
+    # Create Word application COM object
     try {
-        # Create Word application COM object
         $word = New-Object -ComObject Word.Application
         $word.Visible = $false
     }
     catch {
-        # Handle exceptions
         Write-Host "Error: Failed to create Word application object."
         Write-Host "Exception: $_"
         return
     }
 
-    Write-Host "`n--------------------------------------------------------------------------------------------------------"
+    if (-not $silentMode) {
+        Write-Host "`n--------------------------------------------------------------------------------------------------------"
+    }
 
     # Process Word files
     foreach ($wordFile in $wordFiles) {
@@ -118,7 +114,9 @@ function Get-FolderPageCounts {
             Pages    = $wordPageCount
             Type     = "Word Document"
         }
-        Write-Host "File: $($wordFile.Name) - Pages: $wordPageCount - Type: Word Document"
+        if (-not $silentMode) {
+            Write-Host "File: $($wordFile.Name) - Pages: $wordPageCount - Type: Word Document"
+        }
     }
     $word.Quit()
 
@@ -130,20 +128,20 @@ function Get-FolderPageCounts {
             Pages    = $pdfPageCount
             Type     = "PDF Document"
         }
-        Write-Host "File: $($pdfFile.Name) - Pages: $pdfPageCount - Type: PDF Document"
+        if (-not $silentMode) {
+            Write-Host "File: $($pdfFile.Name) - Pages: $pdfPageCount - Type: PDF Document"
+        }
     }
 
     # Display summary information if flag is set    
-    if ($includeSummary) {
-        Write-Host "`n-------------------------------------------------Summary------------------------------------------------"
-        # Calculate and display the total number of Word pages
-        $totalWordPages = ($dataArray | Where-Object { $_.Type -eq 'Word Document' } | Measure-Object -Property Pages -Sum).Sum
-        Write-Host "Total Word Pages: $totalWordPages"
+    $totalWordPages = ($dataArray | Where-Object { $_.Type -eq 'Word Document' } | Measure-Object -Property Pages -Sum).Sum
+    $totalPdfPages = ($dataArray | Where-Object { $_.Type -eq 'PDF Document' } | Measure-Object -Property Pages -Sum).Sum
+    $totalPages = $totalWordPages + $totalPdfPages
 
-        # Calculate and display the total number of PDF pages
-        $totalPdfPages = ($dataArray | Where-Object { $_.Type -eq 'PDF Document' } | Measure-Object -Property Pages -Sum).Sum
+    if ($includeSummary -and -not $silentMode) {
+        Write-Host "`n-------------------------------------------------Summary------------------------------------------------"
+        Write-Host "Total Word Pages: $totalWordPages"
         Write-Host "Total PDF Pages: $totalPdfPages"
-        
         Write-Host "Total Word files processed: $($wordFiles.Count)"
         Write-Host "Total PDF files processed: $($pdfFiles.Count)"
         Write-Host "Total files processed: $($wordFiles.Count + $pdfFiles.Count)"
@@ -152,59 +150,87 @@ function Get-FolderPageCounts {
 
     # Handle CSV file writing based on flag
     if ($writeCSV) {
-        # Determine the CSV file path
+        $csvPath = "$PSScriptRoot/"
 
-        # Generate CSV file path with current date in YYYYMMDD format
-        if ($includeDateInFileName) {
-            $csvPath = "$env:USERPROFILE\Downloads\document_page_counts_" + (Get-Date -Format "yyyyMMdd") + ".csv"
+        # Generate CSV file path with current date if needed
+        $csvPathFull = if ($includeDateInFileName) {
+            $csvPath + "document_page_counts_" + (Get-Date -Format "yyyyMMdd") + ".csv"
+        } else {
+            $csvPath + "document_page_counts.csv"
         }
-        else {
-            $csvPath = "$env:USERPROFILE\Downloads\document_page_counts.csv"
-        }
+
         # Handle existing CSV file scenarios
-        if (Test-Path $csvPath) {
-            $choice = Read-Host "`nThe CSV file already exists. Choose an option:`n1. Append`n2. Overwrite`n3. Cancel`n`n(Enter 1, 2, or 3)"
-
-            switch ($choice) {
-                "1" {
-                    # Continue with existing file, no action needed
-                }
-                "2" {
-                    # Overwrite file and add header
-                    $csvData = "File,Pages,Type"
-                    $csvData | Out-File $csvPath
-                }
-                "3" {
-                    Write-Host "Operation cancelled."
-                    return
-                }
-                default {
-                    Write-Host "Invalid choice. Operation cancelled."
-                    return
+        if (Test-Path $csvPathFull) {
+            if (-not $silentMode) {
+                $choice = Read-Host "`nThe CSV file already exists. Choose an option:`n1. Append`n2. Overwrite`n3. Cancel`n`n(Enter 1, 2, or 3)"
+                switch ($choice) {
+                    "1" { }  # Continue with existing file
+                    "2" {
+                        # Overwrite file and add header
+                        "File,Pages,Type" | Out-File $csvPathFull
+                    }
+                    "3" {
+                        Write-Host "Operation cancelled."
+                        return
+                    }
+                    default {
+                        Write-Host "Invalid choice. Operation cancelled."
+                        return
+                    }
                 }
             }
-        }
-        else {
-            # Create new file and add header
-            $csvData = "File,Pages,Type"
-            $csvData | Out-File $csvPath
+            else {
+                # Overwrite file and add header
+                "File,Pages,Type" | Out-File $csvPathFull
+            }
         }
 
         # Add collected data to the CSV file
-        Add-DataToCSV -dataArray $dataArray -csvPath $csvPath
-        Write-Host "CSV file updated at: $csvPath"
+        Add-DataToCSV -dataArray $dataArray -csvPath $csvPathFull
+        if (-not $silentMode) {
+            Write-Host "`nCSV file updated at: $csvPathFull"
+        }
     }
     else {
-        Write-Host "CSV writing is disabled. No CSV file was created or updated."
+        if (-not $silentMode) {
+            Write-Host "`nCSV writing is disabled. No CSV file was created or updated."
+        }
     }
+    
+    Write-Host "Operation Completed Successfully"
+    Send-Email -totalPages $totalPages -toEmailAddress $toEmailAddress -dataArray $dataArray
 }
 
-# Run the function to process folder and optionally update CSV
-# Parameters: folderPath, writeCSV, includeDateInFileName, summary
-# folderPath: Path to the folder containing documents (optional) - omit to use default folder
-# writeCSV: Flag to toggle CSV writing (optional) - default is true
-# includeDateInFileName: Flag to include the current date in the CSV file name (optional) - default is false
-# includeSummary: Flag to display summary information (optional) - default is false
-# Example: Get-FolderPageCounts -writeCSV $true -folderPath "C:\Documents" -includeDateInFileName $true -includeSummary $true
+# Function to send email with attachment
+function Send-Email {
+    param (
+        [int]$totalPages,  # Total number of pages processed
+        [string]$toEmailAddress,
+        [array]$dataArray  # Array of objects containing file data
+    )
 
-Get-FolderPageCounts -writeCSV $true -folderPath "" -includeDateInFileName $true -includeSummary $true
+    # Create an Outlook COM object
+    $currentDateTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $outlook = New-Object -ComObject Outlook.Application
+    $mail = $outlook.CreateItem(0)
+
+    # Construct the email body
+    $emailBody = "Page Counter Results - $currentDateTime`n"
+    $emailBody += "Total Pages: $totalPages`n`n"
+    $emailBody += "File, Pages, Type`n--------------------------------------`n"
+
+    foreach ($data in $dataArray) {
+        $emailBody += "Name: $($data.FileName), Page Count: $($data.Pages), Document Type: $($data.Type)`n"
+    }
+
+    # Set the email properties
+    $mail.Subject = "Page Counter Results - $currentDateTime"
+    $mail.Body = $emailBody
+    $mail.To = $toEmailAddress
+
+    # Send the email
+    $mail.Send()
+    Write-Host "Email sent to: $toEmailAddress"
+}
+
+Get-FolderPageCounts -writeCSV $false -folderPath "" -includeDateInFileName $false -includeSummary $false -toEmailAddress "mikeamatt@hotmail.com"
