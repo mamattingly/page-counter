@@ -1,0 +1,9 @@
+{
+    "SilentMode":  false,
+    "SendMail":  false,
+    "IncludeSummary":  false,
+    "FolderPath":  "",
+    "IncludeDateInFileName":  false,
+    "EmailAddress":  "",
+    "WriteCSV":  false
+}

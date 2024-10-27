@@ -1,4 +1,8 @@
-# Function to get the page count from a Word document
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$configFilePath = "$PSScriptRoot/config.json"
+
 function Get-WordDocPageCount {
     param (
         [string]$filePath, # Path to the Word document
@@ -56,36 +60,24 @@ function Get-PDFPageCount {
     }
 }
 
-# Function to add data to a CSV file
-function Add-DataToCSV {
-    param (
-        [array]$dataArray,  # Array of objects containing file data
-        [string]$csvPath     # Path to the CSV file
-    )
-
-    foreach ($data in $dataArray) {
-        # Format data as CSV line and append to file
-        "$($data.FileName),$($data.Pages),$($data.Type)" | Out-File -Append $csvPath
-    }
-}
-
 # Function to process folder and update CSV with document page counts
 function Get-FolderPageCounts {
     param (
-        [string]$folderPath = "$PSScriptRoot/Page Counter", # Default folder path
-        [bool]$writeCSV = $false,                             # Flag to toggle CSV writing
-        [bool]$includeDateInFileName = $false,               # Flag to include date in CSV file name
-        [bool]$includeSummary = $false,                       # Flag to display summary information
-        [bool]$silentMode = $true,                            # Flag to suppress prompts
-        [string]$toEmailAddress                                # Recipient email address
+        [string]$folderPath, # Default folder path
+        [string]$toEmailAddress, # Email address to send reports to
+        [bool]$writeCSV, # Flag to toggle CSV writing
+        [bool]$includeDateInFileName, # Flag to include date in CSV file name
+        [bool]$includeSummary, # Flag to display summary information
+        [bool]$silentMode = $False,  # Flag to suppress prompts
+        [bool]$sendMail  # Flag to send email                          
     )
 
-    # Prompt for folder path if not provided and not in silent mode
-    if (-not $folderPath -and -not $silentMode) {
-        $folderPath = Read-Host "Drag a folder or leave blank for the default folder"
+    if ([string]::IsNullOrEmpty($folderPath)) {
+        $folderPath = "$PSScriptRoot/Page Counter"
     }
 
     $dataArray = @()  # Array to store document data
+    $invalidFiles = @()  # Array to store files with issues
 
     # Get lists of Word and PDF files
     $wordFiles = Get-ChildItem -Path $folderPath -Filter "*.docx" -Recurse -ErrorAction SilentlyContinue
@@ -102,112 +94,127 @@ function Get-FolderPageCounts {
         return
     }
 
-    if (-not $silentMode) {
-        Write-Host "`n--------------------------------------------------------------------------------------------------------"
-    }
-
     # Process Word files
     foreach ($wordFile in $wordFiles) {
         $wordPageCount = Get-WordDocPageCount -filePath $wordFile.FullName -wordApp ([ref]$word)
-        $dataArray += [pscustomobject]@{
-            FileName = $wordFile.Name
-            Pages    = $wordPageCount
-            Type     = "Word Document"
-        }
-        if (-not $silentMode) {
-            Write-Host "File: $($wordFile.Name) - Pages: $wordPageCount - Type: Word Document"
+        if ($wordPageCount -eq 0) {
+            $invalidFiles += $wordFile.Name
+        } else {
+            $dataArray += [pscustomobject]@{
+                FileName = $wordFile.Name
+                Pages    = $wordPageCount
+                Type     = "Word Document"
+            }
         }
     }
+
     $word.Quit()
 
     # Process PDF files
     foreach ($pdfFile in $pdfFiles) {
         $pdfPageCount = Get-PDFPageCount -filePath $pdfFile.FullName
-        $dataArray += [pscustomobject]@{
-            FileName = $pdfFile.Name
-            Pages    = $pdfPageCount
-            Type     = "PDF Document"
-        }
-        if (-not $silentMode) {
-            Write-Host "File: $($pdfFile.Name) - Pages: $pdfPageCount - Type: PDF Document"
+        if ($pdfPageCount -eq 0) {
+            $invalidFiles += $pdfFile.Name
+        } else {
+            $dataArray += [pscustomobject]@{
+                FileName = $pdfFile.Name
+                Pages    = $pdfPageCount
+                Type     = "PDF Document"
+            }
         }
     }
 
-    # Display summary information if flag is set    
+    # Display invalid files if any
+    if ($invalidFiles.Count -gt 0 -and -not $silentMode) {
+        Write-Host "`nFiles with issues:"
+        $invalidFiles | ForEach-Object { Write-Host " - $_" }
+    }
+
     $totalWordPages = ($dataArray | Where-Object { $_.Type -eq 'Word Document' } | Measure-Object -Property Pages -Sum).Sum
     $totalPdfPages = ($dataArray | Where-Object { $_.Type -eq 'PDF Document' } | Measure-Object -Property Pages -Sum).Sum
-    $totalPages = $totalWordPages + $totalPdfPages
-
+    
     if ($includeSummary -and -not $silentMode) {
+        # Display summary information if flag is set    
         Write-Host "`n-------------------------------------------------Summary------------------------------------------------"
         Write-Host "Total Word Pages: $totalWordPages"
         Write-Host "Total PDF Pages: $totalPdfPages"
         Write-Host "Total Word files processed: $($wordFiles.Count)"
         Write-Host "Total PDF files processed: $($pdfFiles.Count)"
         Write-Host "Total files processed: $($wordFiles.Count + $pdfFiles.Count)"
+        Write-Host "Total Excluded files: $($invalidFiles.Count)"   
         Write-Host "--------------------------------------------------------------------------------------------------------"
     }
 
-    # Handle CSV file writing based on flag
+    # Handle CSV file writing and email functionality
     if ($writeCSV) {
-        $csvPath = "$PSScriptRoot/"
+        csvMenu -dataArray $dataArray -csvPathFull $csvPathFull -silentMode $silentMode
+    }
+    if ($sendMail -and $toEmailAddress) {
+        Send-Email -toEmailAddress $toEmailAddress -dataArray $dataArray -invalidFiles $invalidFiles
+    }
 
-        # Generate CSV file path with current date if needed
-        $csvPathFull = if ($includeDateInFileName) {
-            $csvPath + "document_page_counts_" + (Get-Date -Format "yyyyMMdd") + ".csv"
-        } else {
-            $csvPath + "document_page_counts.csv"
-        }
+    Write-Host "Operation Completed Successfully"
+}
 
-        # Handle existing CSV file scenarios
-        if (Test-Path $csvPathFull) {
-            if (-not $silentMode) {
-                $choice = Read-Host "`nThe CSV file already exists. Choose an option:`n1. Append`n2. Overwrite`n3. Cancel`n`n(Enter 1, 2, or 3)"
-                switch ($choice) {
-                    "1" { }  # Continue with existing file
-                    "2" {
-                        # Overwrite file and add header
-                        "File,Pages,Type" | Out-File $csvPathFull
-                    }
-                    "3" {
-                        Write-Host "Operation cancelled."
-                        return
-                    }
-                    default {
-                        Write-Host "Invalid choice. Operation cancelled."
-                        return
-                    }
-                }
-            }
-            else {
-                # Overwrite file and add header
-                "File,Pages,Type" | Out-File $csvPathFull
-            }
-        }
+function csvMenu {
+    param (
+        [array]$dataArray,
+        [string]$csvPathFull,
+        [bool]$silentMode
+    )
+    
+    $csvPath = "$PSScriptRoot/"
 
-        # Add collected data to the CSV file
-        Add-DataToCSV -dataArray $dataArray -csvPath $csvPathFull
-        if (-not $silentMode) {
-            Write-Host "`nCSV file updated at: $csvPathFull"
-        }
+    # Generate CSV file path with current date if needed
+    $csvPathFull = if ($includeDateInFileName) {
+        $csvPath + "document_page_counts_" + (Get-Date -Format "yyyyMMdd") + ".csv"
     }
     else {
+        $csvPath + "document_page_counts.csv"
+    }
+
+    # Recipient email address
+    # Handle existing CSV file scenarios
+    if (Test-Path $csvPathFull) {
         if (-not $silentMode) {
-            Write-Host "`nCSV writing is disabled. No CSV file was created or updated."
+            $choice = Read-Host "`nThe CSV file already exists. Choose an option:`n1. Append`n2. Overwrite`n3. Cancel`n`n(Enter 1, 2, or 3)"
+            switch ($choice) {
+                "1" { }  # Continue with existing file
+                "2" {
+                    # Overwrite file and add header
+                    "File,Pages,Type" | Out-File $csvPathFull
+                }
+                "3" {
+                    Write-Host "Operation cancelled."
+                    return
+                }
+                default {
+                    Write-Host "Invalid choice. Operation cancelled."
+                    return
+                }
+            }
+        }
+        else {
+            # Overwrite file and add header
+            "File,Pages,Type" | Out-File $csvPathFull
         }
     }
-    
-    Write-Host "Operation Completed Successfully"
-    Send-Email -totalPages $totalPages -toEmailAddress $toEmailAddress -dataArray $dataArray
+
+    foreach ($data in $dataArray) {
+        # Format data as CSV line and append to file
+        "$($data.FileName),$($data.Pages),$($data.Type)" | Out-File -Append $csvPathFull
+    }
 }
 
 # Function to send email with attachment
 function Send-Email {
     param (
-        [int]$totalPages,  # Total number of pages processed
         [string]$toEmailAddress,
-        [array]$dataArray  # Array of objects containing file data
+        [array]$dataArray,  # Array of objects containing file data
+        [array]$invalidFiles
     )
+
+    $totalPages = $dataArray.Pages.Count
 
     # Create an Outlook COM object
     $currentDateTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -223,6 +230,11 @@ function Send-Email {
         $emailBody += "Name: $($data.FileName), Page Count: $($data.Pages), Document Type: $($data.Type)`n"
     }
 
+    $emailBody += "The following files had issues and were excluded:`n"
+    foreach ($file in $invalidFiles) {
+        $emailBody += " - $file`n"
+    }
+    
     # Set the email properties
     $mail.Subject = "Page Counter Results - $currentDateTime"
     $mail.Body = $emailBody
@@ -233,4 +245,78 @@ function Send-Email {
     Write-Host "Email sent to: $toEmailAddress"
 }
 
-Get-FolderPageCounts -writeCSV $false -folderPath "" -includeDateInFileName $false -includeSummary $false -toEmailAddress "mikeamatt@hotmail.com"
+# Function to save the email address in JSON format
+function Save-EmailConfig {
+    param (
+        [string]$emailAddress
+    )
+
+    # Read existing configuration
+    $configData = @{}
+    if (Test-Path $configFilePath) {
+        $configData = Get-Content -Path $configFilePath | ConvertFrom-Json
+    }
+
+    # Update only the EmailAddress field
+    $configData.EmailAddress = $emailAddress
+
+    # Convert to JSON and save back
+    $configData | ConvertTo-Json -Depth 3 | Set-Content -Path $configFilePath -Force
+}
+
+# Function to get the saved email address from the JSON file
+function Get-SavedEmailAddress {
+    if (Test-Path $configFilePath) {
+        $configData = Get-Content -Path $configFilePath | ConvertFrom-Json
+        return $configData.EmailAddress
+    }
+    return $null
+}
+
+# Function to create the GUI for entering the email address
+function Show-EmailConfigForm {
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Configure Email Address"
+    $form.Size = New-Object System.Drawing.Size(400, 200)
+    $form.StartPosition = "CenterScreen"
+
+    # Label
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Enter the email address to send reports to:"
+    $label.AutoSize = $true
+    $label.Location = New-Object System.Drawing.Point(20, 20)
+    $form.Controls.Add($label)
+
+    # Textbox for email address
+    $emailTextbox = New-Object System.Windows.Forms.TextBox
+    $emailTextbox.Size = New-Object System.Drawing.Size(300, 20)
+    $emailTextbox.Location = New-Object System.Drawing.Point(20, 60)
+    $form.Controls.Add($emailTextbox)
+
+    # Save button
+    $saveButton = New-Object System.Windows.Forms.Button
+    $saveButton.Text = "Save"
+    $saveButton.Location = New-Object System.Drawing.Point(150, 100)
+    $saveButton.Add_Click({
+        Save-EmailConfig -emailAddress $emailTextbox.Text
+        [System.Windows.Forms.MessageBox]::Show("Email address saved successfully.", "Saved", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        $form.Close()
+    })
+    $form.Controls.Add($saveButton)
+
+    # Show the form
+    $form.ShowDialog()
+}
+
+# Main logic to check and retrieve or prompt for the email address
+$emailAddress = Get-SavedEmailAddress
+if (-not $emailAddress) {
+    Show-EmailConfigForm 
+    $emailAddress = Get-SavedEmailAddress  
+}
+
+$configData = Get-Content -Path $configFilePath | ConvertFrom-Json
+
+Get-FolderPageCounts -folderPath $configData.FolderPath -writeCSV $configData.WriteCSV `
+    -includeDateInFileName $configData.IncludeDateInFileName -includeSummary $configData.IncludeSummary `
+    -silentMode $configData.SilentMode -toEmailAddress $configData.EmailAddress -sendMail $configData.SendMail
