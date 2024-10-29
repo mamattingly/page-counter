@@ -214,7 +214,7 @@ function Send-Email {
         [array]$invalidFiles
     )
 
-    $totalPages = $dataArray.Pages.Count
+    $totalPages = ($dataArray | Measure-Object -Property Pages -Sum).Sum
 
     # Create an Outlook COM object
     $currentDateTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
